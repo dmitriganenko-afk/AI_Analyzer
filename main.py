@@ -1,5 +1,6 @@
 import streamlit as st
 from zhipuai import ZhipuAI
+from pypdf import PdfReader  # Новая библиотека для чтения PDF
 
 # --- Настройки страницы ---
 st.set_page_config(page_title="Умный Анализатор Резюме", layout="wide")
@@ -8,18 +9,21 @@ st.set_page_config(page_title="Умный Анализатор Резюме", la
 try:
     api_key = st.secrets["ZHIPUAI_API_KEY"]
 except:
-    st.error("Ошибка: API ключ не найден в секретах. Добавьте его в .streamlit/secrets.toml")
+    st.error("Ошибка: API ключ не найден в секретах.")
     st.stop()
-    
-# ... остальной код остается без изменений ...
 
-st.title("🤖 Умный Анализатор Резюме (Powered by GLM-4)")
-st.markdown("Этот сервис использует ИИ для извлечения смысла из текста, а не просто поиск слов.")
+# --- Функция извлечения текста из PDF ---
+def extract_text_from_pdf(pdf_file):
+    reader = PdfReader(pdf_file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() + "\n"
+    return text
 
-# --- Функция анализа ---
+# --- Функция анализа (без изменений, только промпт чуть уточнил) ---
 def analyze_resume(text):
-    if not api_key or "ВСТАВЬТЕ" in api_key:
-        return "Ошибка: Не вставлен API Key в код программы!"
+    if not api_key:
+        return "Ошибка: Нет API Key"
     
     try:
         client = ZhipuAI(api_key=api_key)
@@ -32,9 +36,9 @@ def analyze_resume(text):
         Верни ответ в следующем формате:
         1. **Имя кандидата**: ...
         2. **Контакты**: (телефон и email)
-        3. **Ключевые навыки**: (списком через запятую, выдели 5-7 самых главных, опираясь на опыт работы)
+        3. **Ключевые навыки**: (списком через запятую, выдели 5-7 самых главных)
         4. **Опыт**: (общее количество лет)
-        5. **Рекомендация**: (стоит ли нанимать этого кандидата на руководящую должность? Коротко Да/Нет и почему)
+        5. **Рекомендация**: (стоит ли нанимать этого кандидата? Коротко Да/Нет и почему)
         """
         
         response = client.chat.completions.create(
@@ -46,15 +50,32 @@ def analyze_resume(text):
         return f"Ошибка при обращении к ИИ: {e}"
 
 # --- Интерфейс ---
-resume_text = st.text_area("Вставьте текст резюме сюда:", height=300)
+st.title("🤖 Умный Анализатор Резюме (PDF + Текст)")
+st.markdown("Загрузите резюме в формате PDF или вставьте текст вручную.")
 
+# --- Выбор метода ввода ---
+option = st.radio("Выберите способ ввода:", ("Текст", "Загрузить PDF"), horizontal=True)
+
+resume_text = ""
+
+if option == "Загрузить PDF":
+    uploaded_file = st.file_uploader("Загрузите файл резюме (PDF)", type="pdf")
+    if uploaded_file is not None:
+        # Читаем файл
+        resume_text = extract_text_from_pdf(uploaded_file)
+        with st.expander("Посмотреть извлеченный текст"):
+            st.text(resume_text)
+else:
+    resume_text = st.text_area("Вставьте текст резюме сюда:", height=300)
+
+# --- Кнопка анализа ---
 if st.button("Проанализировать с помощью ИИ", type="primary"):
     if resume_text.strip():
-        with st.spinner("ИИ анализирует резюме... Это займет пару секунд."):
+        with st.spinner("ИИ анализирует резюме..."):
             result = analyze_resume(resume_text)
             st.markdown("---")
             st.markdown("### Результаты анализа:")
             st.markdown(result)
     else:
-        st.warning("Пожалуйста, вставьте текст резюме.")
+        st.warning("Пожалуйста, загрузите файл или вставьте текст.")
 
