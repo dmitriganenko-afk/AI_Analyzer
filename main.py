@@ -1,21 +1,63 @@
 import streamlit as st
 from zhipuai import ZhipuAI
-from pypdf import PdfReader  # Новая библиотека для чтения PDF
+from pypdf import PdfReader
+import sqlite3
+import pandas as pd
+from datetime import datetime
 
-# --- Настройки страницы ---
-st.set_page_config(page_title="Умный Анализатор Резюме и Вакансии", layout="wide")
+# --- Настройка страницы ---
+st.set_page_config(page_title="HR-Аналитик PRO", layout="wide")
 
-# --- Получаем ключ из секретов ---
+# --- 1. Настройка Базы Данных ---
+def init_db():
+    conn = sqlite3.connect('resume_history.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS analyses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            full_name TEXT,
+            job_title TEXT,
+            match_score TEXT,
+            recommendation TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_analysis(full_name, job, score, rec):
+    conn = sqlite3.connect('resume_history.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO analyses (timestamp, full_name, job_title, match_score, recommendation) VALUES (?, ?, ?, ?, ?)',
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), full_name, job, score, rec))
+    conn.commit()
+    conn.close()
+
+def load_history():
+    conn = sqlite3.connect('resume_history.db')
+    query = """
+        SELECT 
+            timestamp as 'Дата/Время', 
+            full_name as 'ФИО Кандидата', 
+            job_title as 'Вакансия', 
+            match_score as 'Соответствие', 
+            recommendation as 'Решение'
+        FROM analyses ORDER BY timestamp DESC LIMIT 10
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+
+init_db()
+
+# --- Настройки API ---
 try:
-    api_key = st.secrets["ZHIPUAI_API_KEY"]  # здесь должен лежать ваш ключ ZhipuAI
-except Exception:
-    api_key = None
-
-if not api_key:
-    st.error("Ошибка: API ключ ZhipuAI не найден. Добавьте его в `st.secrets['ZHIPUAI_API_KEY']`.")
+    api_key = st.secrets["ZHIPUAI_API_KEY"]
+except:
+    st.error("Ошибка: API ключ не найден.")
     st.stop()
 
-# --- Функция извлечения текста из PDF (БЕЗ ИЗМЕНЕНИЙ) ---
+# --- Функции обработки ---
 def extract_text_from_pdf(pdf_file):
     reader = PdfReader(pdf_file)
     text = ""
@@ -23,102 +65,135 @@ def extract_text_from_pdf(pdf_file):
         text += page.extract_text() + "\n"
     return text
 
-# --- Функция анализа соответствия резюме и вакансии через ZhipuAI ---
-def analyze_resume_vs_job(resume_text: str, job_text: str) -> str:
+def analyze_match(resume_text, job_description):
+    if not api_key:
+        return "Ошибка: Нет API Key"
+    
     try:
         client = ZhipuAI(api_key=api_key)
-
+        
         prompt = f"""
-Ты — HR-менеджер.
+        Ты — старший HR-директор. Проведи глубокий анализ соответствия резюме вакансии.
 
-У тебя есть два текста:
+        РЕЗЮМЕ:
+        {resume_text}
 
-1) Резюме кандидата:
-\"\"\"{resume_text}\"\"\"
+        ВАКАНСИЯ:
+        {job_description}
 
-2) Требования к вакансии:
-\"\"\"{job_text}\"\"\"
+        Выполни анализ и выведи результат ТОЧНО в следующем формате. Не меняй названия меток.
 
-Сравни резюме и вакансию и выдай результат СТРОГО в следующем формате (по-русски):
+        ### 1. Полное ФИО для сохранения
+        (Напиши здесь только Фамилию Имя Отчество цифрами и буквами, без лишних слов. Например: Иванов Иван Иванович)
 
-Имя кандидата: <ФИО или как указано в резюме, если нет — напиши "Не найдено">
-Процент соответствия (Score): <число от 0 до 100 без знака %>
-Плюсы (совпадающие навыки):
-- навык 1
-- навык 2
-- ...
-Минусы (недостающие навыки):
-- навык 1
-- навык 2
-- ...
-Рекомендация: <Нанимать или Не нанимать> — краткое обоснование в 1–2 предложениях.
+        ### 2. Оценка соответствия
+        (Напиши только цифру с процентом, например: 85%)
 
-Обязательно следуй ровно этой структуре и не добавляй ничего лишнего.
-"""
+        ### 3. Анализ навыков
+        (Напиши развернутый анализ: совпадения, пробелы, риски. 3-4 предложения).
+
+        ### 4. Обоснование рекомендации
+        (Напиши подробное обоснование твоего решения. 3-4 предложения).
+
+        ### 5. Итоговый вердикт
+        (Напиши строго одно слово: РЕКОМЕНДУЕТСЯ или НЕ РЕКОМЕНДУЕТСЯ)
+        """
 
         response = client.chat.completions.create(
-            model="glm-4",
-            messages=[{"role": "user", "content": prompt}],
+            model="glm-4",  
+            messages=[{"role": "user", "content": prompt}]
         )
-
         return response.choices[0].message.content
     except Exception as e:
         return f"Ошибка при обращении к ИИ: {e}"
 
 # --- Интерфейс ---
-st.title("🤖 Анализатор Резюме и Требований Вакансии")
-st.markdown(
-    """
-Слева — резюме кандидата (текст или PDF), справа — текст **\"Требования вакансии\"**.  
-Нажмите кнопку, чтобы ИИ сравнил их и выдал оценку соответствия.
-"""
-)
+st.title("🚀 HR-Аналитик PRO")
 
-# --- Две колонки: слева резюме, справа вакансия ---
-col_left, col_right = st.columns(2)
+# ИЗМЕНЕНИЕ ДИЗАЙНА: Выносим выбор формата НАД колонки
+st.subheader("📄 Ввод данных")
+option = st.radio("Формат резюме:", ("Текст", "PDF"), horizontal=True, key="r_opt")
+
+# Создаем колонки
+col1, col2 = st.columns(2)
 
 resume_text = ""
-job_text = ""
 
-with col_left:
-    st.subheader("Резюме кандидата")
-
-    input_mode = st.radio(
-        "Способ ввода резюме:",
-        ("Текст", "Загрузить PDF"),
-        horizontal=True,
-    )
-
-    if input_mode == "Загрузить PDF":
-        uploaded_file = st.file_uploader("Загрузите файл резюме (PDF)", type="pdf")
-        if uploaded_file is not None:
+with col1:
+    # Заголовок левой колонки
+    st.markdown("**Резюме кандидата (скопируйте и вставте в окно или прикрепите в файле pdf)**")
+    
+    if option == "PDF":
+        uploaded_file = st.file_uploader("Загрузите файл PDF", type="pdf", label_visibility="collapsed")
+        if uploaded_file:
             resume_text = extract_text_from_pdf(uploaded_file)
-            with st.expander("Показать извлечённый текст резюме"):
-                st.text(resume_text)
+            # Если текст извлечен, показываем его в маленьком окне для проверки
+            if resume_text:
+                with st.expander("✅ Текст извлечен (нажмите для просмотра)"):
+                    st.text(resume_text)
     else:
-        resume_text = st.text_area(
-            "Текст резюме:",
-            height=350,
-            placeholder="Вставьте сюда текст резюме кандидата...",
-        )
+        # ИЗМЕНЕНИЕ ДИЗАЙНА: Фиксированная высота окна
+        resume_text = st.text_area("Текст резюме", height=300, label_visibility="collapsed")
 
-with col_right:
-    st.subheader("Требования вакансии")
-    job_text = st.text_area(
-        "Текст требований к вакансии:",
-        height=350,
-        placeholder="Опишите требования к вакансии: обязанности, навыки, стек, опыт и т.п.",
-    )
+with col2:
+    # Заголовок правой колонки
+    st.markdown("**Требования вакансии (скопируйте и вставте в это окно)**")
+    
+    # ИЗМЕНЕНИЕ ДИЗАЙНА: Фиксированная высота окна, совпадающая с левой
+    job_description = st.text_area("Текст вакансии", height=300, label_visibility="collapsed")
 
-# --- Кнопка анализа соответствия ---
-if st.button("Проанализировать соответствие", type="primary"):
-    if not resume_text or not resume_text.strip():
-        st.warning("Пожалуйста, введите или загрузите резюме кандидата.")
-    elif not job_text or not job_text.strip():
-        st.warning("Пожалуйста, введите текст требований вакансии.")
-    else:
-        with st.spinner("ИИ сравнивает резюме с вакансией..."):
-            result = analyze_resume_vs_job(resume_text, job_text)
+# --- Кнопка и логика ---
+st.markdown("---")
+if st.button("🔍 Анализировать и Сохранить", type="primary"):
+    if resume_text and job_description:
+        with st.spinner("Глубокий анализ..."):
+            result = analyze_match(resume_text, job_description)
             st.markdown("---")
-            st.markdown("### Результаты анализа соответствия")
+            st.markdown("### 📝 Результат анализа:")
             st.markdown(result)
+            
+            # Логика парсинга
+            try:
+                lines = result.split('\n')
+                full_name = "Не указано"
+                score = "0%"
+                rec = "Не определено"
+                
+                current_block = ""
+                for line in lines:
+                    line_clean = line.strip().replace('*', '')
+                    
+                    if "### 1." in line:
+                        current_block = "name"
+                        continue
+                    if "### 2." in line:
+                        current_block = "score"
+                        continue
+                    
+                    if current_block == "name" and line_clean and "ФИО" not in line_clean:
+                        full_name = line_clean
+                        current_block = ""
+                    
+                    if "%" in line_clean:
+                        score = line_clean
+
+                if "НЕ РЕКОМЕНДУЕТСЯ" in result:
+                    rec = "НЕ РЕКОМЕНДУЕТСЯ"
+                elif "РЕКОМЕНДУЕТСЯ" in result:
+                    rec = "РЕКОМЕНДУЕТСЯ"
+                
+                save_analysis(full_name, job_description, score, rec)
+                st.success(f"Сохранено в историю: {full_name}")
+            except Exception as e:
+                st.warning(f"Анализ показан, но не сохранен (ошибка парсинга).")
+    else:
+        st.warning("Заполните оба поля.")
+
+# --- Блок Истории ---
+st.markdown("---")
+st.subheader("📚 История последних анализов")
+history_df = load_history()
+if not history_df.empty:
+    st.dataframe(history_df, use_container_width=True)
+else:
+    st.info("История пуста. Проведите первый анализ.")
